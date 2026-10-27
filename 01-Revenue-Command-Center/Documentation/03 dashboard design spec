@@ -1,0 +1,111 @@
+# 03 - Dashboard Design Specification
+
+## 1. Design principles
+
+1. **Answer first:** the top of every page states the headline, then details.
+2. **One idea per visual:** no decorative charts.
+3. **Consistency:** same navigation, colors, and filter positions on all pages.
+4. **Progressive depth:** Summary -> Segment -> Detail (drill-through).
+5. **Honest scales:** bars start at zero; comparisons are like-for-like.
+
+## 2. Visual identity ("command center" theme)
+
+| Element | Choice |
+|---|---|
+| Background | Dark slate `#0F172A`; cards `#1E293B` |
+| Primary accent | Cyan `#22D3EE` |
+| Secondary accent | Amber `#F59E0B` |
+| Positive / Negative | Green `#10B981` / Red `#EF4444` (used only for variance) |
+| Text | Primary `#F1F5F9`, muted `#94A3B8` |
+| Font | Segoe UI / Inter; titles 20pt, KPI values 28pt, labels 10-11pt |
+| Canvas | 16:9 (1920x1080), 8px spacing grid |
+
+Color discipline: two accent colors plus neutrals. Red/green appear **only** for good/bad.
+
+## 3. Global layout
+
+```
++--------------------------------------------------------------+
+| LOGO / TITLE        [Date range] [Territory] [Category]  [?]  |
++------+-------------------------------------------------------+
+| NAV  |                                                       |
+| 1 Exec|                  PAGE CONTENT                         |
+| 2 Grow|                                                       |
+| 3 Prof|                                                       |
+| 4 Ops |                                                       |
+| 5 Fcst|                                                       |
++------+-------------------------------------------------------+
+```
+
+Global slicers: Date range, Territory Group, Product Category, Customer Type. Slicers sync across pages.
+
+## 4. Page specifications
+
+### Page 1: Executive Pulse
+**Question answered:** Is the business healthy right now?
+
+```
++--------+--------+--------+--------+--------+--------+
+| Revenue| Profit | Margin%| Orders |  AOV   | Units  |   <- KPI cards (value, YoY %, sparkline)
++--------+--------+--------+--------+--------+--------+
+| Revenue vs Prior Year (line, 60%) | Revenue->Profit      |
+|                                   | Waterfall (40%)      |
++-----------------------------------+----------------------+
+| Top 5 Territories (bar) | Category mix (donut/bar) | Alerts |
++-------------------------+--------------------------+--------+
+```
+
+### Page 2: Growth Opportunities
+**Question:** Where should we invest?
+- Territory map (bubble size = revenue, color = margin)
+- Category x Territory heatmap (revenue or margin, toggled)
+- Pareto chart: products ranking cumulative to 80% of revenue
+- Customer segment comparison (Online vs. Store; new vs. returning)
+- Drill-through: Territory -> Product -> Customer
+
+### Page 3: Profitability Deep Dive
+**Question:** Where do we make or lose money?
+- Margin % by subcategory (sorted bar)
+- Scatter: volume (x) vs. margin % (y), bubble = revenue; quadrant lines at average
+- Discount band analysis (0%, 1-10%, 11-20%, 20%+) vs. margin
+- Promotion performance table (revenue, margin, discount cost)
+- Low-margin product watchlist
+
+### Page 4: Operational Success
+**Question:** Is the organization executing?
+- Rep leaderboard with quota attainment bullet chart
+- Average fulfilment days trend + distribution
+- Ship method comparison (cost % and speed)
+- Freight % of sales by territory
+
+### Page 5: Forecast & Insights
+**Question:** What happens next, and what is unusual?
+- Revenue forecast with confidence band (from Python, `ds.RevenueForecast`)
+- Customer segments from RFM clustering (`ds.CustomerSegment`): size, revenue, profile cards
+- Anomaly timeline: flagged unusual weeks/months
+
+## 5. Interaction design
+
+| Feature | Behavior |
+|---|---|
+| Metric toggle | Switch charts among Revenue / Profit / Units (field parameter) |
+| Time intelligence | MTD, QTD, YTD, Rolling 12M selector |
+| Drill-through | Right-click any product/territory -> detail page |
+| Tooltips | Hover shows a mini trend chart |
+| Cross-filtering | Clicking a visual filters others on the page |
+| Reset button | Clears all slicers and bookmarks |
+| Info icon | Shows the KPI definition from the dictionary |
+
+## 6. Accessibility and quality checklist
+
+- [ ] Contrast ratio at least 4.5:1 for text
+- [ ] Meaning never conveyed by color alone (add arrows or labels)
+- [ ] Every visual has a title that states what it shows
+- [ ] Tab order and alt text set
+- [ ] Performance: page loads in under 3 seconds
+- [ ] Numbers reconcile to the source (see data quality checks)
+
+## 7. Open design questions
+
+- Final BI tool choice (affects component names and measure syntax)
+- Whether to include a mobile layout (v2)

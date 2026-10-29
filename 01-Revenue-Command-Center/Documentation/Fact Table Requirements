@@ -1,0 +1,374 @@
+Fact Table Load Requirements
+Project 01: Revenue Command Center | RevenueDW load specification
+This document specifies what the three fact table loads must produce. It deliberately contains no INSERT statements: you write those. Use it as your build checklist and your acceptance test.
+1. Scope and load order
+Order
+Table
+Grain (one row =)
+Source
+1
+dw.FactSales
+one sales order line
+Sales.SalesOrderDetail + Sales.SalesOrderHeader
+2
+dw.FactOrder
+one sales order
+Sales.SalesOrderHeader + Purchasing.ShipMethod
+3
+dw.FactSalesQuota
+one sales rep per quota date
+Sales.SalesPersonQuotaHistory
+Load FactSales before FactOrder, because the cross-check between them (section 6) needs both.
+2. Prerequisites (must be true before any fact load)
+[ ] dw.EtlConfig contains the DateOffsetYears setting
+[ ] dw.DimDate is built with the current DateOffsetYears value
+[ ] dw.DimTerritory, DimProduct, DimCustomer, DimSalesPerson, DimPromotion are loaded
+[ ] stg.ProductCostRange is loaded (needed by FactSales only)
+[ ] Each dimension has its Unknown member (key = -1)
+If you change DateOffsetYears at any point, rebuild DimDate and DimPromotion first, then reload all three facts. A mismatch drops rows silently.
+3. Rules that apply to all three loads
+#
+Rule
+R1
+Reload pattern: clear the table with DELETE (not TRUNCATE), then insert. Running the load twice must give the same result.
+R2
+Read the date offset from dw.EtlConfig. Never hard-code it in the query.
+R3
+Apply the offset to source dates before looking up DimDate. Convert datetime values to DATE first, so time-of-day cannot break the match.
+R4
+Surrogate keys, not natural keys. Facts store the dimension's ...Key, found by joining on the dimension's natural ...ID column.
+R5
+Unknown member: when a lookup finds no match, store -1 instead of NULL or dropping the row. Use COALESCE.
+R6
+Order date is mandatory. If an order date finds no calendar row, the row must not be silently kept with a wrong key. The row-count check (section 6) exists to catch this.
+R7
+No row multiplication. Every join must return at most one row per source row. If your row count is higher than the source, a join is fanning out.
+R8
+Match the target column types shown in each table below. Money measures keep their precision.
+R9
+Write an explicit column list in the INSERT, not positional columns.
+4. FactSales
+Purpose: line-level sales, revenue, cost, and profit. Powers product, customer, territory, promotion, and margin analysis.
+Grain: one row per SalesOrderDetailID. Expected rows: the same as Sales.SalesOrderDetail.
+4.1 Source and joins
+Need
+Source
+Join logic
+Line data
+Sales.SalesOrderDetail
+driving table
+Order data
+Sales.SalesOrderHeader
+SalesOrderID
+Order date key
+dw.DimDate
+offset order date = FullDate (inner join, see R6)
+Ship date key
+dw.DimDate
+offset ship date = FullDate (left join, ship date can be missing)
+Product key
+dw.DimProduct
+ProductID
+Customer key
+dw.DimCustomer
+CustomerID
+Territory key
+dw.DimTerritory
+TerritoryID
+Sales person key
+dw.DimSalesPerson
+SalesPersonID (null for online orders)
+Promotion key
+dw.DimPromotion
+SpecialOfferID
+Historical unit cost
+stg.ProductCostRange
+same product, source order date between range start and end
+Fallback cost
+dw.DimProduct.CurrentStandardCost
+used only when no cost range matches
+4.2 Target columns
+Column
+Type
+Rule
+SalesOrderDetailID
+INT, PK
+from source line
+SalesOrderID
+INT
+from source line
+OrderDateKey
+INT
+DateKey for the offset order date
+ShipDateKey
+INT, nullable
+DateKey for the offset ship date; NULL if no ship date
+ProductKey
+INT
+lookup, -1 if no match
+CustomerKey
+INT
+lookup, -1 if no match
+TerritoryKey
+INT
+lookup, -1 if no match
+SalesPersonKey
+INT
+lookup, -1 if no match (expected for online orders)
+PromotionKey
+INT
+lookup, -1 if no match
+OnlineOrderFlag
+BIT
+from order header
+OrderQty
+SMALLINT
+from source line
+UnitPrice
+DECIMAL(19,4)
+from source line
+UnitPriceDiscount
+DECIMAL(19,4)
+from source line (a fraction, e.g. 0.02)
+UnitCost
+DECIMAL(19,4)
+cost in effect on the order date; fallback per 4.3
+CostSource
+VARCHAR(10)
+History, Current, or Missing per 4.3
+GrossSales
+DECIMAL(38,6)
+OrderQty * UnitPrice
+DiscountAmount
+DECIMAL(38,6)
+OrderQty * UnitPrice * UnitPriceDiscount
+NetRevenue
+DECIMAL(38,6)
+source LineTotal (so it reconciles exactly)
+COGS
+DECIMAL(38,6)
+OrderQty * UnitCost
+GrossProfit
+DECIMAL(38,6)
+NetRevenue - COGS
+4.3 Cost logic
+1. Look for a cost range for the product whose start and end dates contain the source (not offset) order date. The end date of the current row is already stored as 9999-12-31.
+2. If more than one range matches, take the most recent start date, so only one cost is ever returned (R7).
+3. If found: UnitCost = that cost, CostSource = History.
+4. If none found but the product has a current standard cost: use it, CostSource = Current.
+5. If neither exists: UnitCost = 0, CostSource = Missing.
+Why the source date? The cost ranges were loaded with original dates. Comparing them to an offset order date would match nothing.
+4.4 Business rules
+• Revenue is net of line discounts, excluding tax and freight (decision D3).
+• Freight and tax never appear in FactSales (decision D5). They live in FactOrder.
+• Online orders legitimately have no sales rep, so SalesPersonKey = -1 is correct for them.
+• Do not filter any rows out (no status filter, no date filter). The warehouse holds everything in the source.
+5. FactOrder
+Purpose: order-level amounts (SubTotal, Tax, Freight, TotalDue) and fulfilment timing. Powers freight %, ship method, and fulfilment dashboards.
+Grain: one row per SalesOrderID. Expected rows: the same as Sales.SalesOrderHeader.
+5.1 Source and joins
+Need
+Source
+Join logic
+Order data
+Sales.SalesOrderHeader
+driving table
+Order date key
+dw.DimDate
+offset order date (inner join)
+Ship date key
+dw.DimDate
+offset ship date (left join)
+Due date key
+dw.DimDate
+offset due date (left join)
+Customer / sales person / territory keys
+their dimensions
+natural key lookup, -1 if none
+Ship method name
+Purchasing.ShipMethod
+ShipMethodID (left join; Unknown if none)
+5.2 Target columns
+Column
+Type
+Rule
+SalesOrderID
+INT, PK
+from source
+OrderDateKey
+INT
+offset order date lookup
+ShipDateKey
+INT, nullable
+offset ship date lookup
+DueDateKey
+INT, nullable
+offset due date lookup
+CustomerKey
+INT
+lookup, -1 if none
+SalesPersonKey
+INT
+lookup, -1 if none
+TerritoryKey
+INT
+lookup, -1 if none
+ShipMethodName
+NVARCHAR(50)
+ship method name, Unknown if none
+OnlineOrderFlag
+BIT
+from source
+SubTotal
+DECIMAL(19,4)
+from source
+TaxAmt
+DECIMAL(19,4)
+from source
+Freight
+DECIMAL(19,4)
+from source
+TotalDue
+DECIMAL(19,4)
+from source
+FulfilmentDays
+INT, nullable
+days from source order date to source ship date; NULL if not shipped
+5.3 Business rules
+• FulfilmentDays uses the original dates. A whole-year shift does not change the gap between two dates, but computing it from source dates avoids leap-year edge cases.
+• Never SUM Freight or TaxAmt after joining FactOrder to FactSales. Each order's freight would repeat once per line. Aggregate one side first (rule R7 in practice).
+6. FactSalesQuota
+Purpose: quota targets per sales rep, to compute quota attainment against FactSales revenue.
+Grain: one row per sales rep per quota date. Expected rows: the same as Sales.SalesPersonQuotaHistory.
+6.1 Source and joins
+Need
+Source
+Join logic
+Quota rows
+Sales.SalesPersonQuotaHistory
+driving table
+Sales person key
+dw.DimSalesPerson
+BusinessEntityID = SalesPersonID (inner join, every quota belongs to a known rep)
+Quota date key
+dw.DimDate
+offset quota date = FullDate (inner join)
+6.2 Target columns
+Column
+Type
+Rule
+SalesPersonKey
+INT, part of PK
+lookup
+QuotaDateKey
+INT, part of PK
+DateKey for the offset quota date
+SalesQuota
+DECIMAL(19,4)
+from source
+6.3 Business rules
+• Quota dates are not guaranteed to be the first day of a calendar quarter. Load the date as given. Assigning a quota to a quarter is done later through DimDate, and that rule should be written into your measure documentation.
+• Quotas are per rep and period. Never SUM them across reps and compare to total company revenue without stating that scope.
+7. Acceptance criteria
+Your load is done only when every item below passes. Write the check queries yourself.
+#
+Check
+Expected
+A1
+FactSales row count vs Sales.SalesOrderDetail
+equal (121,317 in the standard AdventureWorks 2022 data; confirm against your source)
+A2
+SUM(NetRevenue) vs SUM(LineTotal) in the source
+difference under 0.01
+A3
+FactSales lines with ProductKey, CustomerKey, TerritoryKey, or PromotionKey = -1
+0
+A4
+FactSales store-order lines (not online) with SalesPersonKey = -1
+0
+A5
+CostSource distribution
+a split of History and Current; understand it and note it
+A6
+GrossSales - DiscountAmount vs NetRevenue
+equal within rounding
+A7
+FactOrder row count vs Sales.SalesOrderHeader
+equal (31,465 in the standard data)
+A8
+SubTotal, Freight, TotalDue totals vs source
+differences under 0.01
+A9
+Each order's SubTotal vs the sum of its FactSales lines
+no order differs by more than 0.01
+A10
+FulfilmentDays minimum
+not negative
+A11
+FactSalesQuota row count vs source
+equal (163 in the standard data)
+A12
+SUM(SalesQuota) vs source
+difference under 0.01
+A13
+Run the load twice
+row counts and totals identical both times
+A14
+Your data quality script (item 11)
+0 critical failures
+8. Common pitfalls
+Pitfall
+Symptom
+Fix
+Joining DimDate on datetime, not date
+Fewer rows than source
+Convert to DATE before the lookup
+Using the offset date for the cost lookup
+Every line falls back to current cost
+Use the source order date
+Cost ranges overlap
+More fact rows than source
+Pick a single cost per line (TOP 1 pattern)
+Left join on order date
+Rows with a wrong or NULL date key
+Inner join, then let the row-count check expose gaps
+Using TotalDue as revenue
+Revenue too high (includes tax and freight)
+Use LineTotal
+Joining FactOrder to FactSales and summing freight
+Freight inflated
+Aggregate lines first
+Positional INSERT
+Values land in wrong columns after a table change
+Always list columns (R9)
+Forgetting to clear the table
+Primary key violation on re-run
+DELETE first (R1)
+Offset changed but only facts reloaded
+Row counts drop
+Rebuild DimDate and DimPromotion first
+9. Design decisions this load depends on
+ID
+Decision
+D2
+Fact grain is the order line
+D3
+Revenue is LineTotal (net of discount, no tax or freight)
+D4
+Cost comes from the cost history by order date
+D5
+Order-level amounts live in FactOrder
+D6
+Unknown member (-1) in every dimension
+D9
+Date offset is stored in dw.EtlConfig
+D10
+Missing history falls back to current cost, recorded in CostSource
+10. Definition of done
+[ ] All three loads written by you as separate scripts
+[ ] All acceptance checks A1 to A14 pass
+[ ] Each script is re-runnable
+[ ] Scripts committed to GitHub, one commit per fact table
+[ ] Tracker updated (items 8, 9, 10)
+[ ] You can explain, in your own words, why FactOrder is separate from FactSales
+When your three scripts are ready, paste them into the chat for review. Compare them with the earlier versions afterwards, and note any differences you can justify.
